@@ -52,8 +52,8 @@ Patient (Browser)
 |---|---|
 | Video avatar | [Tavus CVI](https://tavus.io) |
 | LLM | OpenAI GPT-4o-mini |
-| STT (Speech-to-Text) | Tavus native STT (Deepgram under the hood) |
-| TTS (Text-to-Speech) | Tavus native TTS voice |
+| STT (Speech-to-Text) | Deepgram (via Tavus `tavus-advanced` engine) |
+| TTS (Text-to-Speech) | Cartesia `sonic-3` with custom voice |
 | Backend | FastAPI + uvicorn |
 | Database | SQLite via aiosqlite |
 | Frontend | React + Vite + TypeScript + Tailwind CSS |
@@ -65,57 +65,79 @@ Patient (Browser)
 
 ## Speech Pipeline (STT + TTS)
 
-Mykare uses **Tavus CVI's built-in speech pipeline** — no separate STT or TTS service needs to be configured or paid for separately.
+Mykare uses **Deepgram for STT** and **Cartesia for TTS**, both wired into Tavus CVI's `pipeline_mode: full` so WebRTC, lip-sync, and audio routing are handled automatically.
 
-### STT — Speech to Text
+### STT — Speech to Text (Deepgram)
 
 ```
 Patient speaks into mic
         │
         ▼
-Tavus STT (Deepgram-powered, built in)
-        │  Transcribes speech in real time
+Tavus STT layer → Deepgram (tavus-advanced engine)
+        │  Transcribes speech in real time over WebRTC
         ▼
-Text appended to conversation as a user message
+Text appended as a user message in the conversation
         │
         ▼
-POST /v1/chat/completions → our FastAPI backend
+POST /v1/chat/completions → FastAPI backend
+        │
+        ▼
+GPT-4o-mini tool loop
 ```
 
-- Tavus listens to the patient's microphone via WebRTC
-- It transcribes speech in real time using its built-in Deepgram integration
-- The transcribed text is sent to our backend as part of the OpenAI-compatible messages array
-- Our backend strips Tavus metadata and passes clean text to GPT-4o-mini
-- The raw transcript is also forwarded to the frontend via SSE so it appears in the live transcript panel
+- Tavus captures microphone audio via WebRTC and routes it to Deepgram for transcription
+- The STT engine is set to `tavus-advanced` — Tavus's managed Deepgram integration
+- Healthcare `hotwords` (`Mykare`, `appointment`, `doctor`) are passed to Deepgram to reduce mis-transcription
+- Transcribed text arrives at our backend as part of the OpenAI-compatible messages array
+- The backend also forwards the raw transcript to the frontend via SSE for the live transcript panel
 
-### TTS — Text to Speech
+### TTS — Text to Speech (Cartesia)
 
 ```
-GPT-4o-mini generates a response
+GPT-4o-mini generates a text response
         │
         ▼
-Our backend streams text back to Tavus (OpenAI SSE format)
+Backend streams chunks back to Tavus (OpenAI SSE format)
         │
         ▼
-Tavus TTS converts text → speech audio
-        │
+Tavus TTS layer → Cartesia sonic-3
+        │  Synthesises speech with custom voice
         ▼
-Avatar lip-syncs and speaks the response in real time
+Avatar lip-syncs and speaks in real time via WebRTC
 ```
 
-- Our backend streams the LLM's text response in OpenAI SSE chunk format
-- Tavus receives each chunk, converts it to audio using its native TTS engine
-- The avatar lip-syncs to the generated audio in real time via WebRTC
-- The same text is also emitted as an SSE event to the frontend for the transcript
+- Our backend streams the LLM response as OpenAI SSE chunks
+- Tavus routes each chunk to Cartesia `sonic-3` for synthesis using a custom voice
+- `tts_emotion_control` is enabled so the voice sounds natural and expressive for a healthcare context
+- The synthesised audio is lip-synced to the avatar and played back in real time over WebRTC
+- The same text chunks are also emitted as SSE events to the frontend transcript panel
 
-### Why Tavus native (not Deepgram/Cartesia directly)?
+### Persona Layer Configuration
 
-Tavus CVI's `pipeline_mode: full` bundles STT + TTS + lip-sync + WebRTC into a single managed service. Running them separately would require:
-- Your own WebRTC signalling server
-- Manual audio routing between STT → LLM → TTS
-- Separate lip-sync synchronisation with the avatar
+The Tavus persona is created on first backend startup with these layers:
 
-Using Tavus native keeps the stack simple — we only need to implement the LLM layer (the `/v1/chat/completions` endpoint). Tavus handles everything else.
+```json
+{
+  "layers": {
+    "llm": {
+      "model": "custom",
+      "base_url": "https://<your-tunnel>.trycloudflare.com/v1",
+      "api_key": "<LLM_INTERNAL_KEY>"
+    },
+    "tts": {
+      "tts_engine": "cartesia",
+      "external_voice_id": "<CARTESIA_VOICE_ID>",
+      "api_key": "<CARTESIA_API_KEY>",
+      "tts_emotion_control": true,
+      "tts_model_name": "sonic-3"
+    },
+    "stt": {
+      "stt_engine": "tavus-advanced",
+      "hotwords": "Mykare appointment doctor"
+    }
+  }
+}
+```
 
 ---
 
@@ -127,6 +149,8 @@ Using Tavus native keeps the stack simple — we only need to implement the LLM 
 - API keys for:
   - [OpenAI](https://platform.openai.com/api-keys)
   - [Tavus](https://tavus.io) — needs a Replica ID from your Tavus account
+  - [Cartesia](https://cartesia.ai) — for TTS (`CARTESIA_API_KEY` + `CARTESIA_VOICE_ID`)
+  - [Deepgram](https://deepgram.com) — for STT (`DEEPGRAM_API_KEY`)
 
 ---
 
@@ -333,6 +357,9 @@ TAVUS_PERSONA_ID=p...
 | `TAVUS_API_KEY` | Yes | Your Tavus platform API key |
 | `TAVUS_REPLICA_ID` | Yes | Tavus replica ID for the avatar |
 | `TAVUS_PERSONA_ID` | No | Auto-created on first run; save to reuse |
+| `CARTESIA_API_KEY` | Yes | Cartesia API key for TTS |
+| `CARTESIA_VOICE_ID` | Yes | Cartesia voice ID used for Aria's voice |
+| `DEEPGRAM_API_KEY` | Yes | Deepgram API key for STT |
 | `PUBLIC_BACKEND_URL` | Yes | HTTPS URL Tavus uses to call your LLM endpoint |
 | `LLM_INTERNAL_KEY` | Yes | Bearer token for authenticating Tavus → your backend |
 | `DB_PATH` | No | SQLite path (default: `./mykare.db`) |
