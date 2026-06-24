@@ -32,8 +32,21 @@ async def ensure_persona() -> str:
         "api_key": config.llm_internal_key,
     }
 
-    # Use Tavus's native voice — no TTS override
-    layers: dict = {"llm": llm_layer}
+    # Cartesia TTS with custom voice + Tavus-advanced STT (Deepgram-powered)
+    layers: dict = {
+        "llm": llm_layer,
+        "tts": {
+            "tts_engine": "cartesia",
+            "external_voice_id": config.cartesia_voice_id,
+            "api_key": config.cartesia_api_key,
+            "tts_emotion_control": True,
+            "tts_model_name": "sonic-3",
+        },
+        "stt": {
+            "stt_engine": "tavus-advanced",   # Deepgram-powered, managed by Tavus
+            "hotwords": "Mykare appointment doctor",
+        },
+    }
 
     payload = {
         "persona_name": "Mykare AI Receptionist",
