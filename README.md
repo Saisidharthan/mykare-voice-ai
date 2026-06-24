@@ -52,12 +52,70 @@ Patient (Browser)
 |---|---|
 | Video avatar | [Tavus CVI](https://tavus.io) |
 | LLM | OpenAI GPT-4o-mini |
+| STT (Speech-to-Text) | Tavus native STT (Deepgram under the hood) |
+| TTS (Text-to-Speech) | Tavus native TTS voice |
 | Backend | FastAPI + uvicorn |
 | Database | SQLite via aiosqlite |
 | Frontend | React + Vite + TypeScript + Tailwind CSS |
 | Tunnel | Cloudflare Quick Tunnels (`cloudflared`) |
 | Rate limiting | slowapi |
 | Events | Server-Sent Events (SSE) |
+
+---
+
+## Speech Pipeline (STT + TTS)
+
+Mykare uses **Tavus CVI's built-in speech pipeline** — no separate STT or TTS service needs to be configured or paid for separately.
+
+### STT — Speech to Text
+
+```
+Patient speaks into mic
+        │
+        ▼
+Tavus STT (Deepgram-powered, built in)
+        │  Transcribes speech in real time
+        ▼
+Text appended to conversation as a user message
+        │
+        ▼
+POST /v1/chat/completions → our FastAPI backend
+```
+
+- Tavus listens to the patient's microphone via WebRTC
+- It transcribes speech in real time using its built-in Deepgram integration
+- The transcribed text is sent to our backend as part of the OpenAI-compatible messages array
+- Our backend strips Tavus metadata and passes clean text to GPT-4o-mini
+- The raw transcript is also forwarded to the frontend via SSE so it appears in the live transcript panel
+
+### TTS — Text to Speech
+
+```
+GPT-4o-mini generates a response
+        │
+        ▼
+Our backend streams text back to Tavus (OpenAI SSE format)
+        │
+        ▼
+Tavus TTS converts text → speech audio
+        │
+        ▼
+Avatar lip-syncs and speaks the response in real time
+```
+
+- Our backend streams the LLM's text response in OpenAI SSE chunk format
+- Tavus receives each chunk, converts it to audio using its native TTS engine
+- The avatar lip-syncs to the generated audio in real time via WebRTC
+- The same text is also emitted as an SSE event to the frontend for the transcript
+
+### Why Tavus native (not Deepgram/Cartesia directly)?
+
+Tavus CVI's `pipeline_mode: full` bundles STT + TTS + lip-sync + WebRTC into a single managed service. Running them separately would require:
+- Your own WebRTC signalling server
+- Manual audio routing between STT → LLM → TTS
+- Separate lip-sync synchronisation with the avatar
+
+Using Tavus native keeps the stack simple — we only need to implement the LLM layer (the `/v1/chat/completions` endpoint). Tavus handles everything else.
 
 ---
 
